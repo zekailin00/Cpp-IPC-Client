@@ -1,45 +1,74 @@
-#include <windows.h>
 #include <iostream>
 #include <cstring>
 
-struct Message {
-    int command_id;
-    char payload[256];
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <semaphore.h>
+#include <unistd.h>
+#endif
+
+struct RpcRequest {
+    int request_id;
+    char function_name[64];
+    char args_json[512];
+};
+
+struct RpcResponse {
+    int request_id;
+    int status_code;
+    char result_json[512];
 };
 
 int main() {
-    const char* map_name = "Local\\MySharedMemory";
-    const char* event_name = "Local\\MySharedMemoryEvent";
+    RpcRequest req = {1};
+    strcpy(req.function_name, "echo");
+    strcpy(req.args_json, "{\"text\":3.33,\"b\":4}");
 
-    HANDLE hMap = OpenFileMappingA(FILE_MAP_WRITE, FALSE, map_name);
-    if (!hMap) {
-        std::cerr << "Failed to open file mapping.\n";
-        return 1;
-    }
+    const char* RequestMap = "/MyRpcRequest";
+    const char* ResponseMap = "/MyRpcResponse";
+    const char* RequestSemaphore = "/MyRpcRequestSem";
+    const char* ResponseSemaphore = "/MyRpcResponseSem";
 
-    HANDLE hEvent = OpenEventA(EVENT_MODIFY_STATE, FALSE, event_name);
-    if (!hEvent) {
-        std::cerr << "Failed to open event.\n";
-        return 1;
-    }
+#ifdef _WIN32
+    HANDLE hReq = OpenFileMappingA(FILE_MAP_WRITE, FALSE, RequestMap);
+    HANDLE hResp = OpenFileMappingA(FILE_MAP_READ, FALSE, ResponseMap);
+    HANDLE hReqEvt = OpenEventA(EVENT_MODIFY_STATE, FALSE, RequestSemaphore);
+    HANDLE hRespEvt = OpenEventA(SYNCHRONIZE, FALSE, ResponseSemaphore);
 
-    void* pBuf = MapViewOfFile(hMap, FILE_MAP_WRITE, 0, 0, sizeof(Message));
-    if (!pBuf) {
-        std::cerr << "Failed to map view.\n";
-        return 1;
-    }
+    void* ptrReq = MapViewOfFile(hReq, FILE_MAP_WRITE, 0, 0, sizeof(RpcRequest));
+    void* ptrResp = MapViewOfFile(hResp, FILE_MAP_READ, 0, 0, sizeof(RpcResponse));
 
-    Message msg;
-    msg.command_id = 1;
-    strcpy_s(msg.payload, "Hello from C++");
+    memcpy(ptrReq, &req, sizeof(RpcRequest));
+    SetEvent(hReqEvt);
+    WaitForSingleObject(hRespEvt, INFINITE);
 
-    memcpy(pBuf, &msg, sizeof(msg));
-    SetEvent(hEvent);
+    RpcResponse resp;
+    memcpy(&resp, ptrResp, sizeof(RpcResponse));
+    std::cout << "[C++] Response: " << resp.result_json << std::endl;
 
-    std::cout << "Sent message to C# server.\n";
+#else
+    int fdReq = shm_open("/MyRpcRequest", O_RDWR | O_CREAT, 0666);
+    ftruncate(fdReq, sizeof(RpcRequest));
+    void* ptrReq = mmap(nullptr, sizeof(RpcRequest), PROT_WRITE, MAP_SHARED, fdReq, 0);
+    memcpy(ptrReq, &req, sizeof(RpcRequest));
 
-    UnmapViewOfFile(pBuf);
-    CloseHandle(hMap);
-    CloseHandle(hEvent);
+    int fdResp = shm_open("/MyRpcResponse", O_RDWR | O_CREAT, 0666);
+    ftruncate(fdResp, sizeof(RpcResponse));
+    void* ptrResp = mmap(nullptr, sizeof(RpcResponse), PROT_READ, MAP_SHARED, fdResp, 0);
+
+    sem_t* semReq = sem_open("/MyRpcRequestSem", O_CREAT, 0666, 0);
+    sem_t* semResp = sem_open("/MyRpcResponseSem", O_CREAT, 0666, 0);
+
+    sem_post(semReq);
+    sem_wait(semResp);
+
+    RpcResponse resp;
+    memcpy(&resp, ptrResp, sizeof(RpcResponse));
+    std::cout << "[C++] Response: " << resp.result_json << std::endl;
+#endif
+
     return 0;
 }

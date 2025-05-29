@@ -1,1 +1,68 @@
 build
+
+# Build results
+bin/
+obj/
+
+# User-specific files
+*.user
+*.userosscache
+*.suo
+*.sln.docstates
+
+# Mono Auto Generated Files
+mono_crash.*
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Rider project files
+.idea/
+
+# VS Code settings
+.vscode/
+
+# NuGet
+*.nupkg
+*.snupkg
+*.nuspec
+.nuget/
+
+# Dotnet tool restore
+.dotnet/
+
+# ASP.NET Scaffolding
+ScaffoldingReadMe.txt
+
+# Logs
+*.log
+
+# Test results
+TestResults/
+*.trx
+*.coverage
+*.coveragejson
+
+# Others
+*.cache
+*.pidb
+*.svclog
+
+# Global JSON
+global.json
+
+# Local secrets (user secrets)
+**/secrets.json
+
+# Resharper
+_ReSharper*/
+*.DotSettings.user
+
+# Entity Framework Migrations
+Migrations/
+
+# Visual Studio temporary files
+*.vspscc
+*.vssscc
+.vs/
