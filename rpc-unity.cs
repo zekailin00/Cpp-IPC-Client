@@ -3,7 +3,7 @@ using System.Threading;
 using System.Collections.Generic;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
-using System.Text.Json;
+using UnityEngine; // Use Unity's JSON system
 
 namespace SharedMemRPC
 {
@@ -29,9 +29,21 @@ namespace SharedMemRPC
         public string result_json;
     }
 
+    [Serializable]
+    public class RpcArgsWrapper
+    {
+        public string[] keys;
+        public string[] values;
+    }
+
+    [System.Serializable]
+    public class ResultWrapper {
+        public string result;
+    }
+
     public class RpcServer
     {
-        private readonly Dictionary<string, Func<Dictionary<string, object>, object>> functions = new();
+        private readonly Dictionary<string, Func<Dictionary<string, string>, object>> functions = new();
 
         private readonly MemoryMappedFile reqMMF;
         private readonly MemoryMappedFile respMMF;
@@ -54,7 +66,7 @@ namespace SharedMemRPC
             respEvt = new EventWaitHandle(false, EventResetMode.AutoReset, responseEvent);
         }
 
-        public void Register(string name, Func<Dictionary<string, object>, object> handler)
+        public void Register(string name, Func<Dictionary<string, string>, object> handler)
         {
             functions[name] = handler;
         }
@@ -83,7 +95,7 @@ namespace SharedMemRPC
 
                 WriteStruct(respAcc, resp);
                 respEvt.Set();
-                Console.WriteLine($"[RPC Server] Handled: {req.function_name}, Args: {req.args_json}");
+                Debug.Log($"[RPC Server] Handled: {req.function_name}, Args: {req.args_json}");
             }
         }
 
@@ -91,39 +103,29 @@ namespace SharedMemRPC
         {
             try
             {
-                var args = ParseArgs(argsJson);
+                Dictionary<string, string> args = ParseArgs(argsJson);
                 var result = functions[func](args);
                 status = 0;
-                return JsonSerializer.Serialize(result);
+                return JsonUtility.ToJson(new ResultWrapper { result = result?.ToString() });
             }
             catch (Exception ex)
             {
+                Debug.Log("Dispatch Exception");
+                Debug.Log(ex.Message);
                 status = 1;
-                return JsonSerializer.Serialize(new { error = ex.Message });
+                return JsonUtility.ToJson(new ResultWrapper { result = ex.Message });
             }
         }
 
-        private Dictionary<string, object> ParseArgs(string json)
+        private Dictionary<string, string> ParseArgs(string json)
         {
-            var args = new Dictionary<string, object>();
-            using var doc = JsonDocument.Parse(json);
-            foreach (var prop in doc.RootElement.EnumerateObject())
+            var parsed = JsonUtility.FromJson<RpcArgsWrapper>(json);
+            var dict = new Dictionary<string, string>();
+            for (int i = 0; i < parsed.keys.Length; i++)
             {
-                args[prop.Name] = ReadDynamicValue(prop.Value);
+                dict[parsed.keys[i]] = parsed.values[i];
             }
-            return args;
-        }
-
-        private object? ReadDynamicValue(JsonElement elem)
-        {
-            return elem.ValueKind switch
-            {
-                JsonValueKind.String => elem.GetString(),
-                JsonValueKind.Number => elem.TryGetInt64(out var i) ? i : elem.GetDouble(),
-                JsonValueKind.True => true,
-                JsonValueKind.False => false,
-                _ => null
-            };
+            return dict;
         }
 
         private static T ReadStruct<T>(MemoryMappedViewAccessor acc) where T : struct
