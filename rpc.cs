@@ -3,7 +3,7 @@ using System.Threading;
 using System.Collections.Generic;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
-using System.Text.Json;
+using Serialization;
 
 namespace SharedMemRPC
 {
@@ -29,34 +29,103 @@ namespace SharedMemRPC
         public string result_json;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi, Pack = 1)]
+    public struct RpcCallback
+    {
+        public int callback_id;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 512)]
+        public string args_json;
+    }
+
+    public class HandleRegistry
+    {
+        private readonly Dictionary<int, object> handles = [];
+        private int nextHandleId = 1;
+
+        public int AddHandle(object obj)
+        {
+            int handleId = nextHandleId++;
+            handles[handleId] = obj;
+            return handleId;
+        }
+
+        public bool GetObject<T>(int handleID, out T obj)
+        {
+            bool found = handles.TryGetValue(handleID, out object? value);
+            obj = (T) value;
+            return found;
+        }
+
+        public bool RemoveHandle(int handle)
+        {
+            return handles.Remove(handle);
+        }
+    }
+
     public class RpcServer
     {
-        private readonly Dictionary<string, Func<Dictionary<string, object>, object>> functions = new();
+        private readonly Dictionary<string, Func<Dictionary<string, string>, object>> functions = new();
 
         private readonly MemoryMappedFile reqMMF;
         private readonly MemoryMappedFile respMMF;
+        private readonly MemoryMappedFile cbMMF;
         private readonly MemoryMappedViewAccessor reqAcc;
         private readonly MemoryMappedViewAccessor respAcc;
+        private readonly MemoryMappedViewAccessor cbAcc;
         private readonly EventWaitHandle reqEvt;
         private readonly EventWaitHandle respEvt;
+        private readonly EventWaitHandle cbEvt;
+
+        public HandleRegistry handleRegistry;
 
         public RpcServer(
             string requestMap = "/MyRpcRequest",
             string responseMap = "/MyRpcResponse",
+            string callbackMap = "/MyRpcCallback",
             string requestEvent = "/MyRpcRequestSem",
-            string responseEvent = "/MyRpcResponseSem")
+            string responseEvent = "/MyRpcResponseSem",
+            string callbackEvent = "/MyRpcCallbackSem")
         {
             reqMMF = MemoryMappedFile.CreateOrOpen(requestMap, 4096);
             respMMF = MemoryMappedFile.CreateOrOpen(responseMap, 4096);
+            cbMMF = MemoryMappedFile.CreateOrOpen(callbackMap, 4096);
             reqAcc = reqMMF.CreateViewAccessor();
             respAcc = respMMF.CreateViewAccessor();
+            cbAcc = cbMMF.CreateViewAccessor();
             reqEvt = new EventWaitHandle(false, EventResetMode.AutoReset, requestEvent);
             respEvt = new EventWaitHandle(false, EventResetMode.AutoReset, responseEvent);
+            cbEvt = new EventWaitHandle(false, EventResetMode.AutoReset, callbackEvent);
+
+            handleRegistry = new HandleRegistry();
         }
 
-        public void Register(string name, Func<Dictionary<string, object>, object> handler)
+        public void Register(string name, Func<Dictionary<string, string>, object> handler)
         {
             functions[name] = handler;
+        }
+
+        public void Register<TDelegate>(string name, TDelegate del) where TDelegate : Delegate
+        {
+            var method = del.Method;
+            var target = del.Target;
+
+            functions[name] = (argDict) =>
+            {
+                var parameters = method.GetParameters();
+                var args = new object[parameters.Length];
+
+                for (int i = 0; i < parameters.Length; i++)
+                {
+                    var param = parameters[i];
+                    if (!argDict.TryGetValue(param.Name, out var strValue))
+                        throw new ArgumentException($"Missing argument: {param.Name}");
+
+                    args[i] = Convert.ChangeType(strValue, param.ParameterType);
+                }
+
+                return method.Invoke(target, args);
+            };
         }
 
         public void Start()
@@ -83,47 +152,52 @@ namespace SharedMemRPC
 
                 WriteStruct(respAcc, resp);
                 respEvt.Set();
+                // Debug.Log($"[RPC Server] Handled: {req.function_name}, Args: {req.args_json}");
                 Console.WriteLine($"[RPC Server] Handled: {req.function_name}, Args: {req.args_json}");
             }
+        }
+
+        public void TriggerCallback(int callbackId, string argsJson)
+        {
+            RpcCallback cb = new RpcCallback
+            {
+                callback_id = callbackId,
+                args_json = argsJson
+            };
+            WriteStruct(cbAcc, cb);
+            cbEvt.Set();
         }
 
         private string Dispatch(string func, string argsJson, out int status)
         {
             try
             {
-                var args = ParseArgs(argsJson);
+                Dictionary<string, string> args = ParseArgs(argsJson);
                 var result = functions[func](args);
                 status = 0;
-                return JsonSerializer.Serialize(result);
+                return JsonHelper.ToJson(result?.ToString());
             }
             catch (Exception ex)
             {
+                // Debug.Log("Dispatch Exception");
+                // Debug.Log(ex.Message);
+                Console.WriteLine("Dispatch exception: " + ex.Message);
                 status = 1;
-                return JsonSerializer.Serialize(new { error = ex.Message });
+                return JsonHelper.ToJson(ex.Message);
             }
         }
 
-        private Dictionary<string, object> ParseArgs(string json)
+        private Dictionary<string, string> ParseArgs(string json)
         {
-            var args = new Dictionary<string, object>();
-            using var doc = JsonDocument.Parse(json);
-            foreach (var prop in doc.RootElement.EnumerateObject())
-            {
-                args[prop.Name] = ReadDynamicValue(prop.Value);
-            }
-            return args;
-        }
+            RpcArgsWrapper? parsed = JsonHelper.FromJson(json);
 
-        private object? ReadDynamicValue(JsonElement elem)
-        {
-            return elem.ValueKind switch
+            var dict = new Dictionary<string, string>();
+            for (int i = 0; i < parsed?.keys.Length; i++)
             {
-                JsonValueKind.String => elem.GetString(),
-                JsonValueKind.Number => elem.TryGetInt64(out var i) ? i : elem.GetDouble(),
-                JsonValueKind.True => true,
-                JsonValueKind.False => false,
-                _ => null
-            };
+                dict[parsed.keys[i]] = parsed.values[i];
+            }
+
+            return dict;
         }
 
         private static T ReadStruct<T>(MemoryMappedViewAccessor acc) where T : struct
