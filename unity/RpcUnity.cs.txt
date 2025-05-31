@@ -1,0 +1,60 @@
+using System.Collections;
+using System.Collections.Generic;
+using System.Threading;
+using UnityEngine;
+using SharedMemRPC;
+using System;
+
+
+public class RpcUnity : MonoBehaviour
+{
+    RpcServer server;
+
+    // Start is called before the first frame update
+    void Start()
+    {
+        server = new RpcServer();
+
+        server.Register<Func<float, float, float>>("add", (float a, float b) => a + b);
+        server.Register<Func<double, double, double>>("sub", (double a, double b) => a - b);
+        server.Register<Func<float, float, float>>("mul", (float a, float b) => a + b);
+        server.Register<Func<string, string>>("echo", (string text) => "Server echo: " + text);
+
+        server.Register<Func<string, int, int, int>>("do_work", (string input, int delay, int onComplete) =>
+        {
+            Console.WriteLine("input: " + input);
+            Console.WriteLine("Delay: " + delay);
+            Console.WriteLine("onComoplate: " + onComplete);
+            server.TriggerCallback(onComplete, new { a = 1, b = "str", c = 3.33 });
+            return 0;
+        });
+
+        server.Register<Func<int, int, string, int>>("timer", (int interval, int callback, string text) =>
+        {
+            return server.handleRegistry.AddHandle(new Timer(
+                callback: state => server.TriggerCallback(callback, new { text }),
+                state: null,
+                dueTime: 0,
+                period: interval
+            ));
+        });
+
+        server.Register<Func<int, bool>>("dispose_timer", (int timerHandle) =>
+        {
+            Console.WriteLine("Handle disposed: " + timerHandle);
+            if (server.handleRegistry.GetObject(timerHandle, out Timer timer))
+            {
+                timer.Dispose();
+                server.handleRegistry.RemoveHandle(timerHandle);
+                return true;
+            }
+            return false;
+        });
+    }
+
+    // Update is called once per frame
+    void Update()
+    {
+        server.ProcessRPC();
+    }
+}
