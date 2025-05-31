@@ -40,7 +40,7 @@ namespace SharedMemRPC
 
     public class HandleRegistry
     {
-        private readonly Dictionary<int, object> handles = [];
+        private readonly Dictionary<int, object> handles = new();
         private int nextHandleId = 1;
 
         public int AddHandle(object obj)
@@ -98,11 +98,6 @@ namespace SharedMemRPC
             cbEvt = new EventWaitHandle(false, EventResetMode.AutoReset, callbackEvent);
 
             handleRegistry = new HandleRegistry();
-        }
-
-        public void Register(string name, Func<Dictionary<string, string>, object> handler)
-        {
-            functions[name] = handler;
         }
 
         public void Register<TDelegate>(string name, TDelegate del) where TDelegate : Delegate
