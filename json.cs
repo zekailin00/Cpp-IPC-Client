@@ -40,6 +40,17 @@ namespace Serialization
 #endif
         }
 
+        static public string ToJson(RpcArgsWrapper rpcArgs)
+        {
+#if UNITY_2017_1_OR_NEWER
+            return JsonUtility.ToJson(rpcArgs);
+#else
+            return JsonSerializer.Serialize(rpcArgs,
+                new JsonSerializerOptions { IncludeFields = true }
+            );
+#endif
+        }
+
         static public RpcArgsWrapper? FromJson(string jsonString)
         {
 #if UNITY_2017_1_OR_NEWER

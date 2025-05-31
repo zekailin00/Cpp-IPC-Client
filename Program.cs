@@ -15,25 +15,33 @@ class Program
         server.Register("add", (float a, float b) => a + b);
         server.Register("sub", (double a, double b) => a - b);
         server.Register("mul", mul);
-        server.Register("echo", args => args["text"]?.ToString() ?? "null");
+        server.Register("echo", (string text) => "Server echo: " + text);
 
-        server.Register("timer", (args) =>
+        server.Register("do_work", (string input, int delay, int onComplete) =>
+        {
+            Console.WriteLine("input: " + input);
+            Console.WriteLine("Delay: " + delay);
+            Console.WriteLine("onComoplate: " + onComplete);
+            server.TriggerCallback(onComplete, new { a = 1, b = "str", c = 3.33 });
+        });
+
+        server.Register("timer", (int interval, int callback, string text) =>
         {
             return server.handleRegistry.AddHandle(new Timer(
-                callback: state => server.TriggerCallback(int.Parse(args["id"]), "{}"),                                  // the method to call
-                state: null,                        // optional state object
-                dueTime: 0,                         // delay before first call (ms)
-                period: int.Parse(args["interval"])                        // repeat interval (ms)
+                callback: state => server.TriggerCallback(callback, new { text }),
+                state: null,
+                dueTime: 0,
+                period: interval
             ));
         });
 
-        server.Register("dispose_timer", args =>
+        server.Register("dispose_timer", (int timerHandle) =>
         {
-            int id = int.Parse(args["timer_id"]);
-            if (server.handleRegistry.GetObject(id, out Timer timer))
+            Console.WriteLine("Handle disposed: " + timerHandle);
+            if (server.handleRegistry.GetObject(timerHandle, out Timer timer))
             {
                 timer.Dispose();
-                server.handleRegistry.RemoveHandle(id);
+                server.handleRegistry.RemoveHandle(timerHandle);
                 return true;
             }
             return false;

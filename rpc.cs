@@ -124,7 +124,8 @@ namespace SharedMemRPC
                     args[i] = Convert.ChangeType(strValue, param.ParameterType);
                 }
 
-                return method.Invoke(target, args);
+                object? result = method.Invoke(target, args);
+                return result?.ToString() ?? "";
             };
         }
 
@@ -164,6 +165,37 @@ namespace SharedMemRPC
                 callback_id = callbackId,
                 args_json = argsJson
             };
+            WriteStruct(cbAcc, cb);
+            cbEvt.Set();
+        }
+
+        public void TriggerCallback(int callbackId, object namedArgs)
+        {
+            var props = namedArgs.GetType().GetProperties();
+            var keys = new List<string>();
+            var values = new List<string>();
+
+            foreach (var prop in props)
+            {
+                keys.Add(prop.Name);
+                object value = prop.GetValue(namedArgs);
+                values.Add(value?.ToString() ?? "");
+            }
+
+            var wrapper = new RpcArgsWrapper
+            {
+                keys = keys.ToArray(),
+                values = values.ToArray()
+            };
+
+            string json = JsonHelper.ToJson(wrapper);
+
+            var cb = new RpcCallback
+            {
+                callback_id = callbackId,
+                args_json = json
+            };
+
             WriteStruct(cbAcc, cb);
             cbEvt.Set();
         }

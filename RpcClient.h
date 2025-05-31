@@ -43,7 +43,7 @@ public:
     RpcResponse send(const std::string& function, const std::string& args_json);
 
     // Make a call with arguments and optional callbacks
-    std::string Call(
+    nlohmann::json Call(
         const std::string& function_name,
         const std::initializer_list<std::pair<std::string, nlohmann::json>>& dataArgs,
         const std::initializer_list<std::pair<std::string, Callback>>& callbackArgs = {}

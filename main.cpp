@@ -4,30 +4,9 @@
 
 int main() {
     RpcClient rpcClient{};
+    rpcClient.ListenForCallbacks();
 
-    RpcResponse resp;
-    std::string result;
-
-    // resp = rpcClient.send
-    // ("sub", 
-    //     "{\"keys\": [\"a\", \"b\"], "
-    //     "\"values\": [\"5\", \"1d2.2\"]}"
-    // );
-    // std::cout << "[C++] Response: " << resp.result_json << std::endl;
-
-    // resp = rpcClient.send
-    // ("mul", 
-    //     "{\"keys\": [\"a\", \"b\"], "
-    //     "\"values\": [\"5\", \"123.2\"]}"
-    // );
-    // std::cout << "[C++] Response: " << resp.result_json << std::endl;
-
-    // resp = rpcClient.send
-    // ("echo", 
-    //     "{\"keys\": [\"text\", \"b\"], "
-    //     "\"values\": [\"c\", \"10\"]}"
-    // );
-    // std::cout << "[C++] Response: " << resp.result_json << std::endl;
+    nlohmann::json result;
 
     result = rpcClient.Call("sub", {
         {"a", 2},
@@ -58,13 +37,42 @@ int main() {
     });
     std::cout <<  "[C++] Response: " << result << std::endl;
 
+    result = rpcClient.Call("timer",
+    {
+        {"text", "Hello from C++"},
+        {"interval", 1000} // simulate work on Unity side
+    },
+    {
+        {"callback", [](const nlohmann::json& result) {
+            std::cout << "[Callback] Received result from Unity: " << result.dump() << std::endl;
+        }}
+    });
+    std::cout <<  "[C++] Timer response: " << result << std::endl;
+
+    Sleep(5000);
+
+    // int handle = result["result"];
+
+    int handle = 0;
+    if (result.contains("result")) {
+        std::string valStr = result["result"];
+        try {
+            handle = std::stoi(valStr);
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to convert result to int: " << e.what() << std::endl;
+        }
+    }
+
+    printf("Handle ID: %d", handle);
+    rpcClient.Call("dispose_timer", {{"timerHandle", handle}});
+
     return 0;
 
     /**
      * 1. RPC callback
      * 2. Debug Window API
      * 3. Basic Platform API support
-     * 4. Master process + child Process Spawn
+     * 4. Master process + child Process Spawn / deallocation
      * 5. Multi-client communication using Semaphore
      */
 }

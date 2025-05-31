@@ -69,19 +69,36 @@ void RpcClient::ListenForCallbacks()
             WaitForSingleObject(hCbEvt, INFINITE);
             RpcCallback cb;
             memcpy(&cb, ptrCb, sizeof(cb));
-
             auto it = callbackRegistry.find(cb.callback_id);
-            if (it != callbackRegistry.end()) {
-                nlohmann::json parsed = nlohmann::json::parse(cb.args_json, nullptr, false);
-                if (!parsed.is_discarded()) {
-                    it->second(parsed);
+
+            nlohmann::json wrapped = nlohmann::json::parse(cb.args_json, nullptr, false);
+            if (it != callbackRegistry.end() && !wrapped.is_discarded() && 
+                wrapped.contains("keys") && wrapped.contains("values"))
+            {
+                nlohmann::json flat;
+
+                const auto& keys = wrapped["keys"];
+                const auto& values = wrapped["values"];
+                for (size_t i = 0; i < keys.size() && i < values.size(); ++i) {
+                    std::string key = keys[i];
+                    std::string valStr = values[i];
+
+                    // Try to parse value string as JSON
+                    nlohmann::json parsedVal = nlohmann::json::parse(valStr, nullptr, false);
+                    if (!parsedVal.is_discarded()) {
+                        flat[key] = parsedVal;
+                    } else {
+                        flat[key] = valStr;
+                    }
                 }
+
+                it->second(flat); // Invoke callback with reconstructed flat object
             }
         }
     }).detach();
 }
 
-std::string RpcClient::Call(
+ nlohmann::json RpcClient::Call(
     const std::string& function_name,
     const std::initializer_list<std::pair<std::string, nlohmann::json>>& dataArgs,
     const std::initializer_list<std::pair<std::string, Callback>>& callbackArgs)
@@ -116,5 +133,5 @@ std::string RpcClient::Call(
 
     RpcResponse resp;
     memcpy(&resp, ptrResp, sizeof(RpcResponse));
-    return std::string(resp.result_json);
+    return nlohmann::json::parse(resp.result_json, nullptr, false);
 }
