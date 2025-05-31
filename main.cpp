@@ -37,7 +37,7 @@ int main() {
     });
     std::cout <<  "[C++] Response: " << result << std::endl;
 
-    result = rpcClient.Call("timer",
+    int handle = rpcClient.Call("timer",
     {
         {"text", "Hello from C++"},
         {"interval", 1000} // simulate work on Unity side
@@ -50,18 +50,6 @@ int main() {
     std::cout <<  "[C++] Timer response: " << result << std::endl;
 
     Sleep(5000);
-
-    // int handle = result["result"];
-
-    int handle = 0;
-    if (result.contains("result")) {
-        std::string valStr = result["result"];
-        try {
-            handle = std::stoi(valStr);
-        } catch (const std::exception& e) {
-            std::cerr << "Failed to convert result to int: " << e.what() << std::endl;
-        }
-    }
 
     printf("Handle ID: %d", handle);
     rpcClient.Call("dispose_timer", {{"timerHandle", handle}});

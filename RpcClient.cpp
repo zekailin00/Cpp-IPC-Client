@@ -133,5 +133,8 @@ void RpcClient::ListenForCallbacks()
 
     RpcResponse resp;
     memcpy(&resp, ptrResp, sizeof(RpcResponse));
-    return nlohmann::json::parse(resp.result_json, nullptr, false);
+    return nlohmann::json::parse(
+        (std::string)(nlohmann::json::parse(resp.result_json, nullptr, false)["result"]), 
+        nullptr, false
+    );
 }
