@@ -43,13 +43,14 @@ int main() {
         {"interval", 1000} // simulate work on Unity side
     },
     {
-        {"callback", [](const nlohmann::json& result) {
+        {"callback", [&](const nlohmann::json& result) {
+            rpcClient.Call("AddToCounter", {{"value", 1}});
             std::cout << "[Callback] Received result from Unity: " << result.dump() << std::endl;
         }}
     });
     std::cout <<  "[C++] Timer response: " << result << std::endl;
 
-    Sleep(5000);
+    Sleep(20000);
 
     printf("Handle ID: %d", handle);
     rpcClient.Call("dispose_timer", {{"timerHandle", handle}});
