@@ -44,7 +44,8 @@ int main() {
         {"interval", 1000} // simulate work on Unity side
     },
     {
-        {"callback", [](const nlohmann::json& result) {
+        {"callback", [&](const nlohmann::json& result) {
+            rpcClient.Call("AddToCounter", {{"value", 1}});
             std::cout << "[Callback] Received result from Unity: " << result.dump() << std::endl;
         }}
     });
@@ -53,7 +54,7 @@ int main() {
 #ifdef _WIN32
     Sleep(5000);
 #else    
-    sleep(5000);
+    sleep(20000);
 #endif
 
     printf("Handle ID: %d", handle);
