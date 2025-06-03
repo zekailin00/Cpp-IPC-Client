@@ -1,46 +1,48 @@
-#ifndef RPC_CLIENT_H
-#define RPC_CLIENT_H
-
-#include <windows.h>
+#pragma once
 
 #include <string>
 #include <functional>
-#include <thread>
 #include <unordered_map>
 
 #include <nlohmann/json.hpp>
 
-struct RpcRequest {
-    int request_id;
-    char function_name[64];
-    char args_json[512];
+struct RpcRequest
+{
+    struct {
+        int requestId;
+        char functionName[64];
+        int bufferSize;
+    } header;
+    std::string argsJson;
 };
 
-struct RpcResponse {
-    int request_id;
-    int status_code;
-    char result_json[512];
+struct RpcResponse
+{
+    struct {
+        int requestId;
+        int statusCode;
+        int bufferSize;
+    } header;
+    std::string argsJson;
 };
 
-struct RpcCallback {
-    int callback_id;
-    char args_json[512];
+struct RpcCallback
+{
+    struct {
+        int callbackId;
+        int bufferSize;
+    } header;
+    std::string argsJson;
 };
 
-class RpcClient {
+class RpcClient
+{
 public:
-    RpcClient(const std::string& requestMap = "/MyRpcRequest",
-              const std::string& responseMap = "/MyRpcResponse",
-              const std::string& callbackMap = "/MyRpcCallback",
-              const std::string& requestSem = "/MyRpcRequestSem",
-              const std::string& responseSem = "/MyRpcResponseSem",
-              const std::string& callbackSem = "/MyRpcCallbackSem");
+    RpcClient(int port = 6969);
 
     ~RpcClient();
 
     using Callback = std::function<void(const nlohmann::json&)>;
-
-    RpcResponse send(const std::string& function, const std::string& args_json);
 
     // Make a call with arguments and optional callbacks
     nlohmann::json Call(
@@ -49,19 +51,17 @@ public:
         const std::initializer_list<std::pair<std::string, Callback>>& callbackArgs = {}
     );
 
-    int RpcClient::RegisterCallback(Callback cb);
-    void RpcClient::ListenForCallbacks();
+    int RegisterCallback(Callback cb);
+    void ListenForCallbacks();
 
 private:
-    HANDLE hReq, hResp, hCb;
-    HANDLE hReqEvt, hRespEvt, hCbEvt;
-    void* ptrReq;
-    void* ptrResp;
-    void* ptrCb;
+    bool RequestSend(const RpcRequest& req, RpcResponse& resp);
+    bool CallbackRead(RpcCallback& cb);
+
+private:
+    int clientSocket;
 
     std::unordered_map<int, Callback> callbackRegistry;
     int nextCallbackId = 1;
     int requestCounter = 1;
 };
-
-#endif // RPC_CLIENT_H

@@ -1,6 +1,7 @@
 
 #include "RpcClient.h"
 #include <iostream>
+#include <unistd.h>
 
 int main() {
     RpcClient rpcClient{};
@@ -49,7 +50,11 @@ int main() {
     });
     std::cout <<  "[C++] Timer response: " << result << std::endl;
 
+#ifdef _WIN32
     Sleep(5000);
+#else    
+    sleep(5000);
+#endif
 
     printf("Handle ID: %d", handle);
     rpcClient.Call("dispose_timer", {{"timerHandle", handle}});

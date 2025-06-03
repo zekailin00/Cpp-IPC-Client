@@ -1,62 +1,106 @@
 #include "RpcClient.h"
-#include <cstring>
-#include <stdexcept>
+
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <thread>
 #include <iostream>
 
-RpcClient::RpcClient(const std::string& requestMap,
-                     const std::string& responseMap,
-                     const std::string& callbackMap,
-                     const std::string& requestSem,
-                     const std::string& responseSem,
-                     const std::string& callbackSem)
+#define SOCKET_CHECK(status) if (status < 0)    \
+    {                                           \
+        perror("Failed: " #status "\n");        \
+        exit(EXIT_FAILURE);                     \
+    }
+
+#define STATUS_CHECK(status, msg) if (status)   \
+    {                                           \
+        perror("ERROR: " #msg "\n");            \
+        exit(EXIT_FAILURE);                     \
+    }
+
+RpcClient::RpcClient(int port)
 {
-    hReq = OpenFileMappingA(FILE_MAP_WRITE, FALSE, requestMap.c_str());
-    hResp = OpenFileMappingA(FILE_MAP_READ, FALSE, responseMap.c_str());
-    hCb = OpenFileMappingA(FILE_MAP_READ, FALSE, callbackMap.c_str());
+    sockaddr_in address = {};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = INADDR_ANY;
 
-    hReqEvt = OpenEventA(EVENT_MODIFY_STATE, FALSE, requestSem.c_str());
-    hRespEvt = OpenEventA(SYNCHRONIZE, FALSE, responseSem.c_str());
-    hCbEvt = OpenEventA(SYNCHRONIZE, FALSE, callbackSem.c_str());
-
-    ptrReq = MapViewOfFile(hReq, FILE_MAP_WRITE, 0, 0, sizeof(RpcRequest));
-    ptrResp = MapViewOfFile(hResp, FILE_MAP_READ, 0, 0, sizeof(RpcResponse));
-    ptrCb = MapViewOfFile(hCb, FILE_MAP_READ, 0, 0, sizeof(RpcCallback));
-
-    if (!ptrReq || !ptrResp || !ptrCb || !hReqEvt || !hRespEvt || !hCb)
-        throw std::runtime_error("Failed to initialize Windows shared memory or events");
+    SOCKET_CHECK((clientSocket = socket(AF_INET, SOCK_STREAM, 0)) < 0);
+    SOCKET_CHECK((connect(clientSocket, (struct sockaddr*)&address, sizeof(address))) < 0);
 }
 
 RpcClient::~RpcClient()
 {
-    UnmapViewOfFile(ptrReq);
-    UnmapViewOfFile(ptrResp);
-    UnmapViewOfFile(ptrCb);
-    CloseHandle(hReq);
-    CloseHandle(hResp);
-    CloseHandle(hCb);
-    CloseHandle(hReqEvt);
-    CloseHandle(hRespEvt);
-    CloseHandle(hCbEvt);
+    close(clientSocket);
 }
 
-RpcResponse RpcClient::send(const std::string& function, const std::string& args_json)
+bool RpcClient::RequestSend(const RpcRequest& req, RpcResponse& resp)
 {
-    RpcRequest req{};
-    req.request_id = requestCounter++;
-    strncpy_s(req.function_name, function.c_str(), sizeof(req.function_name) - 1);
-    strncpy_s(req.args_json, args_json.c_str(), sizeof(req.args_json) - 1);
+    size_t sizeSent = send(clientSocket, &req.header, sizeof(req.header), 0);
+    STATUS_CHECK(sizeSent != sizeof(req.header), "DEBUG: failed to send header");
 
-    memcpy(ptrReq, &req, sizeof(RpcRequest));
+    if (req.header.bufferSize != 0)
+    {
+        size_t index = 0;
+        while (index < req.header.bufferSize)
+        {
+            size_t chunk_size = std::min(1024ul, req.header.bufferSize - index);
+            const char* data_ptr = req.argsJson.c_str() + index;
+            ssize_t bytes_sent = send(clientSocket, data_ptr, chunk_size, 0);
 
-    SetEvent(hReqEvt);
-    WaitForSingleObject(hRespEvt, INFINITE);
+            STATUS_CHECK(bytes_sent == -1, "DEBUG: failed to send everything");
+            index += bytes_sent;
+        }
+    }
 
-    RpcResponse resp{};
-    memcpy(&resp, ptrResp, sizeof(RpcResponse));
-    return resp;
+    size_t sizeRecv = recv(clientSocket, &resp.header, sizeof(resp.header), 0);
+    STATUS_CHECK(sizeRecv != sizeof(resp.header), "DEBUG: failed to recv header");
+
+    if (resp.header.bufferSize != 0)
+    {
+        resp.argsJson.resize(resp.header.bufferSize);
+    
+        size_t bytesReceived = 0;
+        while (bytesReceived < resp.header.bufferSize)
+        {
+            size_t chunkSize = std::min(1024ul, resp.header.bufferSize - bytesReceived);
+            char* dataPtr = resp.argsJson.data() + bytesReceived;
+            ssize_t chunkBytesReceived = recv(clientSocket, dataPtr, chunkSize, 0);
+
+            STATUS_CHECK(chunkBytesReceived == -1, "Error receiving message data");
+            bytesReceived += chunkBytesReceived;
+        }
+    }
+
+    return true;
 }
 
-int RpcClient::RegisterCallback(Callback cb) {
+bool RpcClient::CallbackRead(RpcCallback& cb)
+{
+    size_t sizeRecv = recv(clientSocket, &cb.header, sizeof(cb.header), 0);
+    STATUS_CHECK(sizeRecv != sizeof(cb.header), "DEBUG: failed to recv header");
+
+    if (cb.header.bufferSize != 0)
+    {
+        cb.argsJson.resize(cb.header.bufferSize);
+    
+        size_t bytesReceived = 0;
+        while (bytesReceived < cb.header.bufferSize)
+        {
+            size_t chunkSize = std::min(1024ul, cb.header.bufferSize - bytesReceived);
+            char* dataPtr = cb.argsJson.data() + bytesReceived;
+            ssize_t chunkBytesReceived = recv(clientSocket, dataPtr, chunkSize, 0);
+
+            STATUS_CHECK(chunkBytesReceived == -1, "Error receiving message data");
+            bytesReceived += chunkBytesReceived;
+        }
+    }
+    return true;
+}
+
+int RpcClient::RegisterCallback(Callback cb)
+{
     int id = nextCallbackId++;
     callbackRegistry[id] = std::move(cb);
     return id;
@@ -66,12 +110,13 @@ void RpcClient::ListenForCallbacks()
 {
     std::thread([=]() {
         while (true) {
-            WaitForSingleObject(hCbEvt, INFINITE);
             RpcCallback cb;
-            memcpy(&cb, ptrCb, sizeof(cb));
-            auto it = callbackRegistry.find(cb.callback_id);
+            if (!CallbackRead(cb))
+                continue;
 
-            nlohmann::json wrapped = nlohmann::json::parse(cb.args_json, nullptr, false);
+            auto it = callbackRegistry.find(cb.header.callbackId);
+
+            nlohmann::json wrapped = nlohmann::json::parse(cb.argsJson, nullptr, false);
             if (it != callbackRegistry.end() && !wrapped.is_discarded() && 
                 wrapped.contains("keys") && wrapped.contains("values"))
             {
@@ -99,13 +144,10 @@ void RpcClient::ListenForCallbacks()
 }
 
  nlohmann::json RpcClient::Call(
-    const std::string& function_name,
+    const std::string& functionName,
     const std::initializer_list<std::pair<std::string, nlohmann::json>>& dataArgs,
     const std::initializer_list<std::pair<std::string, Callback>>& callbackArgs)
 {
-    RpcRequest req = {requestCounter++};
-    strncpy_s(req.function_name, function_name.c_str(), sizeof(req.function_name) - 1);
-
     std::vector<std::string> keys;
     std::vector<std::string> values;
 
@@ -124,17 +166,20 @@ void RpcClient::ListenForCallbacks()
     args["keys"] = keys;
     args["values"] = values;
 
-    std::string args_json = args.dump();
-    strncpy_s(req.args_json, args_json.c_str(), sizeof(req.args_json) - 1);
-
-    memcpy(ptrReq, &req, sizeof(RpcRequest));
-    SetEvent(hReqEvt);
-    WaitForSingleObject(hRespEvt, INFINITE);
+    RpcRequest req = {requestCounter++};
+    strncpy(
+        req.header.functionName,
+        functionName.c_str(),
+        sizeof(req.header.functionName) - 1
+    );
+    req.header.bufferSize = args.size();
+    req.argsJson = args.dump();
 
     RpcResponse resp;
-    memcpy(&resp, ptrResp, sizeof(RpcResponse));
+    RequestSend(req, resp);
+
     return nlohmann::json::parse(
-        (std::string)(nlohmann::json::parse(resp.result_json, nullptr, false)["result"]), 
+        (std::string)(nlohmann::json::parse(resp.argsJson, nullptr, false)["result"]), 
         nullptr, false
     );
 }
