@@ -56,7 +56,7 @@ int main() {
     std::cout <<  "[C++] Timer response: " << handle << std::endl;
 
 #ifdef _WIN32
-    sleep(5);
+    Sleep(5000);
 #else    
     sleep(5);
 #endif

@@ -1,8 +1,12 @@
 #include "RpcClient.h"
 
+#ifdef _WIN32
+#include <algorithm>
+#else
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #include <iostream>
 
@@ -20,6 +24,27 @@
 
 RpcClient::RpcClient(int port)
 {
+#ifdef _WIN32
+    WSADATA wsaData;
+    int iResult = WSAStartup(MAKEWORD(2,2), &wsaData);
+    if (iResult != 0) {
+        throw std::runtime_error("WSAStartup failed.\n");
+    }
+    clientSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (clientSocket == INVALID_SOCKET) {
+        WSACleanup();
+        throw std::runtime_error("Error at socket creation.\n");
+    }
+
+    sockaddr_in serverAddr;
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(port);
+    serverAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    if (connect(clientSocket, (SOCKADDR*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+        throw std::runtime_error("Socket connection failed.\n");
+    }
+#else
     sockaddr_in address = {};
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
@@ -27,8 +52,9 @@ RpcClient::RpcClient(int port)
 
     SOCKET_CHECK((clientSocket = socket(AF_INET, SOCK_STREAM, 0)) < 0);
     SOCKET_CHECK((connect(clientSocket, (struct sockaddr*)&address, sizeof(address))) < 0);
+#endif
 
-    size_t sizeRecv = recv(clientSocket, &responseHeader, sizeof(ResponseHeader), 0);
+    size_t sizeRecv = recv(clientSocket, (char*)&responseHeader, sizeof(ResponseHeader), 0);
     STATUS_CHECK(
         sizeRecv != sizeof(ResponseHeader) || responseHeader.bufferSize != 0, 
         "DEBUG: Error receiving client ID."
@@ -46,7 +72,7 @@ RpcClient::RpcClient(int port)
             while (rpcReturnValueReady == true)
                 continue;
 
-            size_t sizeRecv = recv(clientSocket, &responseHeader, sizeof(ResponseHeader), MSG_WAITALL);
+            size_t sizeRecv = recv(clientSocket, (char*)&responseHeader, sizeof(ResponseHeader), MSG_WAITALL);
             STATUS_CHECK(sizeRecv != sizeof(ResponseHeader) && running, "DEBUG: failed to recv callback header");
             
             if (!running)
@@ -56,23 +82,23 @@ RpcClient::RpcClient(int port)
             {
                 responseArgsJson.resize(responseHeader.bufferSize);
             
-                size_t bytesReceived = 0;
+                int bytesReceived = 0;
                 while (bytesReceived < responseHeader.bufferSize)
                 {
-                    size_t chunkSize = std::min(1024ul, responseHeader.bufferSize - bytesReceived);
+                    int chunkSize = std::min<int>(1024, responseHeader.bufferSize - bytesReceived);
                     char* dataPtr = responseArgsJson.data() + bytesReceived;
-                    ssize_t chunkBytesReceived = recv(clientSocket, dataPtr, chunkSize, 0);
+                    int chunkBytesReceived = recv(clientSocket, dataPtr, chunkSize, 0);
         
                     STATUS_CHECK(chunkBytesReceived == -1, "Error receiving message data");
                     bytesReceived += chunkBytesReceived;
                 }
             }
 
-            if (responseHeader.msgType == ResponseHeader::MsgType::CALLBACK)
+            if (responseHeader.msgType == ResponseHeader::MsgType::MSG_CALLBACK)
             {
                 std::thread(ProcessCallback, callbackRegistry, responseHeader, responseArgsJson).detach();
             }
-            else if (responseHeader.msgType == ResponseHeader::MsgType::RETURN)
+            else if (responseHeader.msgType == ResponseHeader::MsgType::MSG_RETURN)
             {                
                 rpcReturnValueReady = true;
             }
@@ -87,7 +113,12 @@ RpcClient::RpcClient(int port)
 RpcClient::~RpcClient()
 {
     running.store(false);
+#ifdef _WIN32
+    closesocket(clientSocket);
+    WSACleanup();
+#else
     close(clientSocket);
+#endif
     receiver.join();
 }
 
@@ -171,17 +202,17 @@ nlohmann::json RpcClient::ProcessRPC(const RpcRequest& req)
     {
         std::lock_guard<std::mutex> RpcLock(callMutex);
         
-        size_t sizeSent = send(clientSocket, &req, sizeof(req.header), 0);
+        size_t sizeSent = send(clientSocket, (char*)&req, sizeof(req.header), 0);
         STATUS_CHECK(sizeSent != sizeof(req.header), "DEBUG: failed to send header");
 
         if (req.header.bufferSize != 0)
         {
-            size_t index = 0;
+            int index = 0;
             while (index < req.header.bufferSize)
             {
-                size_t chunk_size = std::min(1024ul, req.header.bufferSize - index);
+                int chunk_size = std::min<int>(1024, req.header.bufferSize - index);
                 const char* data_ptr = req.jsonArgs.c_str() + index;
-                ssize_t bytes_sent = send(clientSocket, data_ptr, chunk_size, 0);
+                int bytes_sent = send(clientSocket, data_ptr, chunk_size, 0);
 
                 STATUS_CHECK(bytes_sent == -1, "DEBUG: failed to send everything");
                 index += bytes_sent;

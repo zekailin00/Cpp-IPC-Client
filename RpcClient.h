@@ -1,13 +1,22 @@
 #pragma once
 
+#ifdef _WIN32
+#define NOMINMAX
+#include <WinSock2.h>
+#pragma comment(lib, "Ws2_32.lib")  // Optional backup
+#define SOCKET_TYPE SOCKET
+#else
+#define SOCKET_TYPE int
+#endif
+
 #include <string>
 #include <functional>
 #include <unordered_map>
 #include <thread>
+#include <mutex>
 
 #include <nlohmann/json.hpp>
 
-#pragma pack(push, 1)  
 
 struct RpcRequest
 {
@@ -23,8 +32,8 @@ struct RpcRequest
 struct ResponseHeader
 {
     enum class MsgType {
-        CALLBACK = 0,
-        RETURN = 1
+        MSG_CALLBACK = 0,
+        MSG_RETURN = 1
     };
 
     int clientId;
@@ -36,8 +45,6 @@ struct ResponseHeader
 
     int bufferSize;
 };
-
-#pragma pack(pop)
 
 class RpcClient
 {
@@ -68,7 +75,7 @@ private:
     );
 
 private:
-    int clientSocket;
+    SOCKET_TYPE clientSocket;
     int clientId;
 
     ResponseHeader responseHeader;
