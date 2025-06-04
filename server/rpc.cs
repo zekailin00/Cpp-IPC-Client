@@ -1,12 +1,12 @@
 using System;
 using System.Threading;
 using System.Collections.Generic;
-using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using Serialization;
 using System.Net.Sockets;
 using System.Net;
 using System.Text;
+using System.IO;
 
 namespace SharedMemRPC
 {
@@ -75,7 +75,7 @@ namespace SharedMemRPC
         public RpcServer(int port = 6969)
         {
             handleRegistry = new HandleRegistry();
-            Register("_RPC::AllocateCallback", (int clientId) =>
+            Register<Func<int,int>>("_RPC::AllocateCallback", (int clientId) =>
             {
                 callbackToClientId[nextCallbackId] = Environment.CurrentManagedThreadId;
                 return nextCallbackId++;
@@ -257,7 +257,6 @@ namespace SharedMemRPC
             {
                 dict[parsed.keys[i]] = parsed.values[i];
             }
-
             return dict;
         }
 
