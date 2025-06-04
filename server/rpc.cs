@@ -67,7 +67,7 @@ namespace SharedMemRPC
         private readonly List<Thread> threads = new();
 
         private int nextCallbackId = 0;
-        private static Mutex respMutex = new Mutex();
+        private readonly Mutex respMutex = new();
         private readonly TcpListener listener;
 
         public HandleRegistry handleRegistry;
