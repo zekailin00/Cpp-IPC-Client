@@ -7,6 +7,8 @@ using System.Net.Sockets;
 using System.Net;
 using System.Text;
 using System.IO;
+using System.Collections.Concurrent;
+using System.Threading.Tasks;
 
 #if UNITY_2017_1_OR_NEWER
 using UnityEngine;
@@ -70,9 +72,12 @@ namespace SharedMemRPC
         private readonly Dictionary<int, TcpClient> clients = new();
         private readonly Dictionary<int, int> callbackToClientId = new();
         private readonly List<Thread> threads = new();
+        private readonly ConcurrentQueue<Action> mainThreadQueue = new();
 
         private int nextCallbackId = 0;
         private readonly Mutex respMutex = new();
+        private readonly Mutex queueMutex = new();
+
         private readonly TcpListener listener;
 
         public HandleRegistry handleRegistry;
@@ -82,7 +87,7 @@ namespace SharedMemRPC
             handleRegistry = new HandleRegistry();
             Register<Func<int, int>>("_RPC::AllocateCallback", (int clientId) =>
             {
-                callbackToClientId[nextCallbackId] = Environment.CurrentManagedThreadId;
+                callbackToClientId[nextCallbackId] = clientId;
                 return nextCallbackId++;
             });
 
@@ -116,6 +121,25 @@ namespace SharedMemRPC
             };
         }
 
+        public void ProcessRPC()
+        {
+            queueMutex.WaitOne();
+            while (mainThreadQueue.TryDequeue(out Action action))
+            {
+                queueMutex.ReleaseMutex();
+                try
+                {
+                    action();
+                }
+                catch (Exception ex)
+                {
+                    DebugPrint($"[RPC Service {Environment.CurrentManagedThreadId}] Unexpected error: {ex}");
+                }
+                queueMutex.WaitOne();
+            }
+            queueMutex.ReleaseMutex();
+        }
+
         private void OnClientConnected(IAsyncResult ar)
         {
             TcpClient client = listener.EndAcceptTcpClient(ar);
@@ -127,9 +151,9 @@ namespace SharedMemRPC
             listener.BeginAcceptTcpClient(OnClientConnected, null);
         }
 
-        private void OnClientDisconnected(TcpClient client)
+        private void OnClientDisconnected(int clientId)
         {
-            DebugPrint($"[RPC Service {Environment.CurrentManagedThreadId}]  Disconnected callback triggered.");
+            DebugPrint($"[RPC Service {clientId}] Disconnected callback triggered.");
         }
 
         public void WaitAllClients()
@@ -140,11 +164,20 @@ namespace SharedMemRPC
             }
         }
 
+        public void RunOnMainThread(Action action)
+        {
+            queueMutex.WaitOne();
+            mainThreadQueue.Enqueue(action);
+            queueMutex.ReleaseMutex();
+        }
+
         private void HandleClient(TcpClient client)
         {
             try
             {
+                respMutex.WaitOne();
                 clients[Environment.CurrentManagedThreadId] = client;
+                respMutex.ReleaseMutex();
                 client.NoDelay = true;
                 DebugPrint("Client connected.");
 
@@ -162,40 +195,53 @@ namespace SharedMemRPC
                     DebugPrint($"[RPC Service {Environment.CurrentManagedThreadId}] Waiting for request...");
                     var req = ReadHeader<RpcRequest>(networkStream);
                     string argsJson = ReadPayload(networkStream, req.bufferSize);
+                    int clientId = Environment.CurrentManagedThreadId;
 
-                    DebugPrint($"[RPC Service {Environment.CurrentManagedThreadId}] argsJson: {argsJson}");
-
-                    string result = Dispatch(req.functionName, argsJson, out int status);
-
-                    var resp = new ResponseHeader
+                    RunOnMainThread(() =>
                     {
-                        clientId = Environment.CurrentManagedThreadId,
-                        msgType = 1,
-                        statusCodeOrCallbackId = status,
-                        bufferSize = result.Length
-                    };
+                        string result = Dispatch(clientId, req.functionName, argsJson, out int status);
 
-                    respMutex.WaitOne();
-                    WriteHeader(networkStream, resp);
-                    WritePayload(networkStream, result);
-                    respMutex.ReleaseMutex();
+                        var resp = new ResponseHeader
+                        {
+                            clientId = clientId,
+                            msgType = 1,
+                            statusCodeOrCallbackId = status,
+                            bufferSize = result.Length
+                        };
 
-                    DebugPrint($"[RPC Service {Environment.CurrentManagedThreadId}] Handled: {req.functionName}, Response: {result}");
+                        respMutex.WaitOne();
+                        if (clients.TryGetValue(clientId, out TcpClient tcpClient) && tcpClient.Connected)
+                        {
+                            WriteHeader(tcpClient.GetStream(), resp);
+                            WritePayload(tcpClient.GetStream(), result);
+                        }
+                        respMutex.ReleaseMutex();
+
+                        DebugPrint($"[RPC Service {clientId}] Handled: {req.functionName}, Response: {result}");
+                    });
                 }
             }
             catch (IOException)
             {
+                respMutex.WaitOne();
+                clients.Remove(Environment.CurrentManagedThreadId);
+                client.Close();
+                respMutex.ReleaseMutex();
+                
                 DebugPrint($"[RPC Service {Environment.CurrentManagedThreadId}] Client disconnected.");
-                OnClientDisconnected(client);
+                OnClientDisconnected(Environment.CurrentManagedThreadId);
             }
             catch (Exception ex)
             {
                 DebugPrint($"[RPC Service {Environment.CurrentManagedThreadId}] Unexpected error: {ex}");
             }
-            finally
-            {
-                client.Close();
-            }
+            // finally
+            // {
+            //     respMutex.WaitOne();
+            //     clients.Remove(Environment.CurrentManagedThreadId);
+            //     client.Close();
+            //     respMutex.ReleaseMutex();
+            // }
         }
 
         public void TriggerCallback(int callbackId, object namedArgs)
@@ -227,14 +273,16 @@ namespace SharedMemRPC
                 bufferSize = json.Length
             };
 
-            TcpClient tcpClient = clients[callbackToClientId[callbackId]];
             respMutex.WaitOne();
-            WriteHeader(tcpClient.GetStream(), cb);
-            WritePayload(tcpClient.GetStream(), json);
+            if (clients.TryGetValue(cb.clientId, out TcpClient tcpClient) && tcpClient.Connected)
+            {
+                WriteHeader(tcpClient.GetStream(), cb);
+                WritePayload(tcpClient.GetStream(), json);
+            }
             respMutex.ReleaseMutex();
         }
 
-        private string Dispatch(string func, string argsJson, out int status)
+        private string Dispatch(int clientId, string func, string argsJson, out int status)
         {
             try
             {
@@ -246,7 +294,7 @@ namespace SharedMemRPC
             catch (Exception ex)
             {
                 DebugPrint(
-                    $"[RPC Service {Environment.CurrentManagedThreadId}] Dispatch exception: "+
+                    $"[RPC Service {clientId}] Dispatch exception: "+
                     ex.Message + "\n" + ex.StackTrace
                 );
                 status = 1;
