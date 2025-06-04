@@ -8,6 +8,11 @@ using System.Net;
 using System.Text;
 using System.IO;
 
+#if UNITY_2017_1_OR_NEWER
+using UnityEngine;
+#endif
+
+
 namespace SharedMemRPC
 {
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi, Pack = 1)]
@@ -75,7 +80,7 @@ namespace SharedMemRPC
         public RpcServer(int port = 6969)
         {
             handleRegistry = new HandleRegistry();
-            Register<Func<int,int>>("_RPC::AllocateCallback", (int clientId) =>
+            Register<Func<int, int>>("_RPC::AllocateCallback", (int clientId) =>
             {
                 callbackToClientId[nextCallbackId] = Environment.CurrentManagedThreadId;
                 return nextCallbackId++;
@@ -84,7 +89,7 @@ namespace SharedMemRPC
             listener = new TcpListener(IPAddress.Any, port);
             listener.Start();
             listener.BeginAcceptTcpClient(OnClientConnected, null);
-            Console.WriteLine("Server started...");
+            DebugPrint("Server started...");
         }
 
         public void Register<TDelegate>(string name, TDelegate del) where TDelegate : Delegate
@@ -124,7 +129,7 @@ namespace SharedMemRPC
 
         private void OnClientDisconnected(TcpClient client)
         {
-            Console.WriteLine("Disconnected callback triggered.");
+            DebugPrint($"[RPC Service {Environment.CurrentManagedThreadId}]  Disconnected callback triggered.");
         }
 
         public void WaitAllClients()
@@ -141,7 +146,7 @@ namespace SharedMemRPC
             {
                 clients[Environment.CurrentManagedThreadId] = client;
                 client.NoDelay = true;
-                Console.WriteLine("Client connected.");
+                DebugPrint("Client connected.");
 
                 NetworkStream networkStream = client.GetStream();
                 WriteHeader(networkStream, new ResponseHeader
@@ -154,11 +159,11 @@ namespace SharedMemRPC
 
                 while (true)
                 {
-                    Console.WriteLine($"[RPC Service {Environment.CurrentManagedThreadId}] Waiting for request...");
+                    DebugPrint($"[RPC Service {Environment.CurrentManagedThreadId}] Waiting for request...");
                     var req = ReadHeader<RpcRequest>(networkStream);
                     string argsJson = ReadPayload(networkStream, req.bufferSize);
 
-                    Console.WriteLine($"[RPC Service {Environment.CurrentManagedThreadId}] argsJson: {argsJson}");
+                    DebugPrint($"[RPC Service {Environment.CurrentManagedThreadId}] argsJson: {argsJson}");
 
                     string result = Dispatch(req.functionName, argsJson, out int status);
 
@@ -174,18 +179,18 @@ namespace SharedMemRPC
                     WriteHeader(networkStream, resp);
                     WritePayload(networkStream, result);
                     respMutex.ReleaseMutex();
-                    // Debug.Log($"[RPC Server] Handled: {req.function_name}, Args: {req.args_json}");
-                    Console.WriteLine($"[RPC Service {Environment.CurrentManagedThreadId}] Handled: {req.functionName}, Response: {result}");
+
+                    DebugPrint($"[RPC Service {Environment.CurrentManagedThreadId}] Handled: {req.functionName}, Response: {result}");
                 }
             }
             catch (IOException)
             {
-                Console.WriteLine("Client disconnected.");
+                DebugPrint($"[RPC Service {Environment.CurrentManagedThreadId}] Client disconnected.");
                 OnClientDisconnected(client);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Unexpected error: {ex}");
+                DebugPrint($"[RPC Service {Environment.CurrentManagedThreadId}] Unexpected error: {ex}");
             }
             finally
             {
@@ -240,9 +245,10 @@ namespace SharedMemRPC
             }
             catch (Exception ex)
             {
-                // Debug.Log("Dispatch Exception");
-                // Debug.Log(ex.Message);
-                Console.WriteLine("Dispatch exception: " + ex.Message);
+                DebugPrint(
+                    $"[RPC Service {Environment.CurrentManagedThreadId}] Dispatch exception: "+
+                    ex.Message + "\n" + ex.StackTrace
+                );
                 status = 1;
                 return JsonHelper.ToJson(ex.Message);
             }
@@ -301,6 +307,15 @@ namespace SharedMemRPC
         {
             byte[] buffer = Encoding.UTF8.GetBytes(data);
             stream.Write(buffer, 0, buffer.Length);
+        }
+
+        private static void DebugPrint(string message)
+        {
+#if UNITY_2017_1_OR_NEWER
+            Debug.Log(message);
+#else
+            Console.WriteLine(message);
+#endif
         }
     }
 }

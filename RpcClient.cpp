@@ -192,7 +192,7 @@ nlohmann::json RpcClient::ProcessRPC(const RpcRequest& req)
     while (rpcReturnValueReady == false)
         continue;
 
-    printf("responseArgsJson:%s\n", responseArgsJson.c_str());
+    printf("RPC: %s |-> %s\n", req.header.functionName, responseArgsJson.c_str());
     auto str = nlohmann::json::parse(responseArgsJson)["result"].get<std::string>();
     auto retval = nlohmann::json::parse(str, nullptr, false);
     rpcReturnValueReady = false;
