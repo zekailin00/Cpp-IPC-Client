@@ -25,7 +25,7 @@ class Program
             server.TriggerCallback(onComplete, new { a = 1, b = "str", c = 3.33 });
         });
 
-        server.Register("timer", (int interval, int callback, string text) =>
+        server.Register("timer", (int interval, int callback, int text) =>
         {
             return server.handleRegistry.AddHandle(new Timer(
                 callback: state => server.TriggerCallback(callback, new { text }),
@@ -47,6 +47,6 @@ class Program
             return false;
         });
 
-        server.Start(); // blocking call
+        while (true) ;
     }
 }

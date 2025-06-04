@@ -3,37 +3,41 @@
 #include <string>
 #include <functional>
 #include <unordered_map>
+#include <thread>
 
 #include <nlohmann/json.hpp>
+
+#pragma pack(push, 1)  
 
 struct RpcRequest
 {
     struct {
-        int requestId;
+        int clientId;
         char functionName[64];
         int bufferSize;
     } header;
-    std::string argsJson;
+
+    std::string jsonArgs;
 };
 
-struct RpcResponse
+struct ResponseHeader
 {
-    struct {
-        int requestId;
-        int statusCode;
-        int bufferSize;
-    } header;
-    std::string argsJson;
-};
+    enum class MsgType {
+        CALLBACK = 0,
+        RETURN = 1
+    };
 
-struct RpcCallback
-{
-    struct {
+    int clientId;
+    MsgType msgType;
+    union {
         int callbackId;
-        int bufferSize;
-    } header;
-    std::string argsJson;
+        int statusCode;
+    } u;
+
+    int bufferSize;
 };
+
+#pragma pack(pop)
 
 class RpcClient
 {
@@ -47,21 +51,34 @@ public:
     // Make a call with arguments and optional callbacks
     nlohmann::json Call(
         const std::string& function_name,
-        const std::initializer_list<std::pair<std::string, nlohmann::json>>& dataArgs,
+        const std::initializer_list<std::pair<std::string, nlohmann::json>>& dataArgs = {},
         const std::initializer_list<std::pair<std::string, Callback>>& callbackArgs = {}
     );
 
-    int RegisterCallback(Callback cb);
-    void ListenForCallbacks();
+    int GetClientId() { return clientId; }
 
 private:
-    bool RequestSend(const RpcRequest& req, RpcResponse& resp);
-    bool CallbackRead(RpcCallback& cb);
+    nlohmann::json ProcessRPC(const RpcRequest& req);
+    int RegisterCallback(Callback cb);
+    
+    static void ProcessCallback(
+        const std::unordered_map<int, Callback>& cbRegistry,
+        const ResponseHeader& respHeader,
+        const std::string& respArgsJson
+    );
 
 private:
     int clientSocket;
+    int clientId;
+
+    ResponseHeader responseHeader;
+    std::string responseArgsJson;
+
+    std::atomic_bool rpcReturnValueReady;
+    std::mutex callMutex;
+    std::thread receiver;
+    std::atomic_bool running;
+    
 
     std::unordered_map<int, Callback> callbackRegistry;
-    int nextCallbackId = 1;
-    int requestCounter = 1;
 };

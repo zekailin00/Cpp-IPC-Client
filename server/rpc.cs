@@ -4,6 +4,9 @@ using System.Collections.Generic;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using Serialization;
+using System.Net.Sockets;
+using System.Net;
+using System.Text;
 
 namespace SharedMemRPC
 {
@@ -13,29 +16,22 @@ namespace SharedMemRPC
         public int request_id;
 
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
-        public string function_name;
+        public string functionName;
 
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 512)]
-        public string args_json;
+        public int bufferSize;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi, Pack = 1)]
-    public struct RpcResponse
+    public struct ResponseHeader
     {
-        public int request_id;
-        public int status_code;
-
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 512)]
-        public string result_json;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi, Pack = 1)]
-    public struct RpcCallback
-    {
-        public int callback_id;
-
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 512)]
-        public string args_json;
+        // enum class MsgType {
+        //     CALLBACK = 0,
+        //     RETURN = 1
+        // };
+        public int clientId;
+        public int msgType;
+        public int statusCodeOrCallbackId;
+        public int bufferSize;
     }
 
     public class HandleRegistry
@@ -66,38 +62,29 @@ namespace SharedMemRPC
     public class RpcServer
     {
         private readonly Dictionary<string, Func<Dictionary<string, string>, object>> functions = new();
+        private readonly Dictionary<int, TcpClient> clients = new();
+        private readonly Dictionary<int, int> callbackToClientId = new();
+        private readonly List<Thread> threads = new();
 
-        private readonly MemoryMappedFile reqMMF;
-        private readonly MemoryMappedFile respMMF;
-        private readonly MemoryMappedFile cbMMF;
-        private readonly MemoryMappedViewAccessor reqAcc;
-        private readonly MemoryMappedViewAccessor respAcc;
-        private readonly MemoryMappedViewAccessor cbAcc;
-        private readonly EventWaitHandle reqEvt;
-        private readonly EventWaitHandle respEvt;
-        private readonly EventWaitHandle cbEvt;
+        private int nextCallbackId = 0;
+        private static Mutex respMutex = new Mutex();
+        private readonly TcpListener listener;
 
         public HandleRegistry handleRegistry;
 
-        public RpcServer(
-            string requestMap = "/MyRpcRequest",
-            string responseMap = "/MyRpcResponse",
-            string callbackMap = "/MyRpcCallback",
-            string requestEvent = "/MyRpcRequestSem",
-            string responseEvent = "/MyRpcResponseSem",
-            string callbackEvent = "/MyRpcCallbackSem")
+        public RpcServer(int port = 6969)
         {
-            reqMMF = MemoryMappedFile.CreateOrOpen(requestMap, 4096);
-            respMMF = MemoryMappedFile.CreateOrOpen(responseMap, 4096);
-            cbMMF = MemoryMappedFile.CreateOrOpen(callbackMap, 4096);
-            reqAcc = reqMMF.CreateViewAccessor();
-            respAcc = respMMF.CreateViewAccessor();
-            cbAcc = cbMMF.CreateViewAccessor();
-            reqEvt = new EventWaitHandle(false, EventResetMode.AutoReset, requestEvent);
-            respEvt = new EventWaitHandle(false, EventResetMode.AutoReset, responseEvent);
-            cbEvt = new EventWaitHandle(false, EventResetMode.AutoReset, callbackEvent);
-
             handleRegistry = new HandleRegistry();
+            Register("_RPC::AllocateCallback", (int clientId) =>
+            {
+                callbackToClientId[nextCallbackId] = Environment.CurrentManagedThreadId;
+                return nextCallbackId++;
+            });
+
+            listener = new TcpListener(IPAddress.Any, port);
+            listener.Start();
+            listener.BeginAcceptTcpClient(OnClientConnected, null);
+            Console.WriteLine("Server started...");
         }
 
         public void Register<TDelegate>(string name, TDelegate del) where TDelegate : Delegate
@@ -124,44 +111,86 @@ namespace SharedMemRPC
             };
         }
 
-        public void Start()
+        private void OnClientConnected(IAsyncResult ar)
         {
-            while (true)
+            TcpClient client = listener.EndAcceptTcpClient(ar);
+            var thread = new Thread(() => HandleClient(client));
+            threads.Add(thread);
+            thread.Start();
+
+            // Continue accepting new clients
+            listener.BeginAcceptTcpClient(OnClientConnected, null);
+        }
+
+        private void OnClientDisconnected(TcpClient client)
+        {
+            Console.WriteLine("Disconnected callback triggered.");
+        }
+
+        public void WaitAllClients()
+        {
+            foreach (Thread t in threads)
             {
-                ProcessRPC();
+                t.Join();
             }
         }
 
-        public void ProcessRPC()
+        private void HandleClient(TcpClient client)
         {
-            if (reqEvt.WaitOne(0))
+            try
             {
-                RpcRequest req = ReadStruct<RpcRequest>(reqAcc);
-                string result = Dispatch(req.function_name, req.args_json, out int status);
+                clients[Environment.CurrentManagedThreadId] = client;
+                client.NoDelay = true;
+                Console.WriteLine("Client connected.");
 
-                RpcResponse resp = new RpcResponse
+                NetworkStream networkStream = client.GetStream();
+                WriteHeader(networkStream, new ResponseHeader
                 {
-                    request_id = req.request_id,
-                    status_code = status,
-                    result_json = result
-                };
+                    clientId = Environment.CurrentManagedThreadId,
+                    msgType = 1,
+                    statusCodeOrCallbackId = 0,
+                    bufferSize = 0
+                });
 
-                WriteStruct(respAcc, resp);
-                respEvt.Set();
-                // Debug.Log($"[RPC Server] Handled: {req.function_name}, Args: {req.args_json}");
-                Console.WriteLine($"[RPC Server] Handled: {req.function_name}, Args: {req.args_json}");
+                while (true)
+                {
+                    Console.WriteLine($"[RPC Service {Environment.CurrentManagedThreadId}] Waiting for request...");
+                    var req = ReadHeader<RpcRequest>(networkStream);
+                    string argsJson = ReadPayload(networkStream, req.bufferSize);
+
+                    Console.WriteLine($"[RPC Service {Environment.CurrentManagedThreadId}] argsJson: {argsJson}");
+
+                    string result = Dispatch(req.functionName, argsJson, out int status);
+
+                    var resp = new ResponseHeader
+                    {
+                        clientId = Environment.CurrentManagedThreadId,
+                        msgType = 1,
+                        statusCodeOrCallbackId = status,
+                        bufferSize = result.Length
+                    };
+
+                    respMutex.WaitOne();
+                    WriteHeader(networkStream, resp);
+                    WritePayload(networkStream, result);
+                    respMutex.ReleaseMutex();
+                    // Debug.Log($"[RPC Server] Handled: {req.function_name}, Args: {req.args_json}");
+                    Console.WriteLine($"[RPC Service {Environment.CurrentManagedThreadId}] Handled: {req.functionName}, Response: {result}");
+                }
             }
-        }
-
-        public void TriggerCallback(int callbackId, string argsJson)
-        {
-            RpcCallback cb = new RpcCallback
+            catch (IOException)
             {
-                callback_id = callbackId,
-                args_json = argsJson
-            };
-            WriteStruct(cbAcc, cb);
-            cbEvt.Set();
+                Console.WriteLine("Client disconnected.");
+                OnClientDisconnected(client);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Unexpected error: {ex}");
+            }
+            finally
+            {
+                client.Close();
+            }
         }
 
         public void TriggerCallback(int callbackId, object namedArgs)
@@ -185,14 +214,19 @@ namespace SharedMemRPC
 
             string json = JsonHelper.ToJson(wrapper);
 
-            var cb = new RpcCallback
+            var cb = new ResponseHeader
             {
-                callback_id = callbackId,
-                args_json = json
+                clientId = callbackToClientId[callbackId],
+                msgType = 0,
+                statusCodeOrCallbackId = callbackId,
+                bufferSize = json.Length
             };
 
-            WriteStruct(cbAcc, cb);
-            cbEvt.Set();
+            TcpClient tcpClient = clients[callbackToClientId[callbackId]];
+            respMutex.WaitOne();
+            WriteHeader(tcpClient.GetStream(), cb);
+            WritePayload(tcpClient.GetStream(), json);
+            respMutex.ReleaseMutex();
         }
 
         private string Dispatch(string func, string argsJson, out int status)
@@ -227,24 +261,47 @@ namespace SharedMemRPC
             return dict;
         }
 
-        private static T ReadStruct<T>(MemoryMappedViewAccessor acc) where T : struct
+        private static T ReadHeader<T>(NetworkStream stream) where T : struct
         {
-            byte[] buffer = new byte[Marshal.SizeOf(typeof(T))];
-            acc.ReadArray(0, buffer, 0, buffer.Length);
+            int size = Marshal.SizeOf<T>();
+            byte[] buffer = new byte[size];
+            int read = stream.Read(buffer, 0, size);
+            if (read != size)
+                throw new IOException("Failed to read full header");
+
             GCHandle handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
-            T result = Marshal.PtrToStructure<T>(handle.AddrOfPinnedObject());
+            T header = Marshal.PtrToStructure<T>(handle.AddrOfPinnedObject());
             handle.Free();
-            return result;
+            return header;
         }
 
-        private static void WriteStruct<T>(MemoryMappedViewAccessor acc, T data) where T : struct
+        private static string ReadPayload(NetworkStream stream, int size)
         {
-            byte[] buffer = new byte[Marshal.SizeOf(typeof(T))];
-            IntPtr ptr = Marshal.AllocHGlobal(buffer.Length);
-            Marshal.StructureToPtr(data, ptr, true);
-            Marshal.Copy(ptr, buffer, 0, buffer.Length);
-            Marshal.FreeHGlobal(ptr);
-            acc.WriteArray(0, buffer, 0, buffer.Length);
+            byte[] buffer = new byte[size];
+            int readTotal = 0;
+            while (readTotal < size)
+            {
+                int read = stream.Read(buffer, readTotal, size - readTotal);
+                if (read <= 0) throw new IOException("Failed to read full payload");
+                readTotal += read;
+            }
+            return Encoding.UTF8.GetString(buffer);
+        }
+
+        private static void WriteHeader<T>(NetworkStream stream, T header) where T : struct
+        {
+            int size = Marshal.SizeOf<T>();
+            byte[] buffer = new byte[size];
+            GCHandle handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+            Marshal.StructureToPtr(header, handle.AddrOfPinnedObject(), false);
+            handle.Free();
+            stream.Write(buffer, 0, size);
+        }
+
+        private static void WritePayload(NetworkStream stream, string data)
+        {
+            byte[] buffer = Encoding.UTF8.GetBytes(data);
+            stream.Write(buffer, 0, buffer.Length);
         }
     }
 }
