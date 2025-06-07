@@ -49,9 +49,9 @@ struct ResponseHeader
 class RpcClient
 {
 public:
-    static RpcClient& Get()
+    static RpcClient& Get(int port = 6969, bool isNode = false)
     {
-        static RpcClient rpcClient{};
+        static RpcClient rpcClient{port, isNode};
         return rpcClient;
     }
 
@@ -59,15 +59,19 @@ public:
 
     // Make a call with arguments and optional callbacks
     nlohmann::json Call(
-        const std::string& function_name,
+        const std::string& functionName,
         const std::vector<std::pair<std::string, nlohmann::json>>& dataArgs = {},
         const std::vector<std::pair<std::string, Callback>>& callbackArgs = {}
     );
 
+    std::string Call(const std::string& functionName, const std::string& jsonArgs);
+
+    void RegisterCallbackHandler(std::function<void(int, const std::string&)> fn);
+
     int GetClientId() { return clientId; }
 
 private:
-    RpcClient(int port = 6969);
+    RpcClient(int port, bool isNode);
     ~RpcClient();
 
     RpcClient(const RpcClient&) = delete;
@@ -85,6 +89,7 @@ private:
 private:
     SOCKET_TYPE clientSocket;
     int clientId;
+    bool isNode;
 
     ResponseHeader responseHeader;
     std::string responseArgsJson;
@@ -94,6 +99,6 @@ private:
     std::thread receiver;
     std::atomic_bool running;
     
-
+    std::function<void(int, const std::string&)> callbackHandler;
     std::unordered_map<int, Callback> callbackRegistry;
 };

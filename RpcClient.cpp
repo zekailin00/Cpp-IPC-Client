@@ -22,7 +22,7 @@
         exit(EXIT_FAILURE);                     \
     }
 
-RpcClient::RpcClient(int port)
+RpcClient::RpcClient(int port, bool isNode): isNode(isNode)
 {
 #ifdef _WIN32
     WSADATA wsaData;
@@ -96,7 +96,10 @@ RpcClient::RpcClient(int port)
 
             if (responseHeader.msgType == ResponseHeader::MsgType::MSG_CALLBACK)
             {
-                std::thread(ProcessCallback, callbackRegistry, responseHeader, responseArgsJson).detach();
+                if (isNode)
+                    std::thread(callbackHandler, responseHeader.clientId, responseArgsJson).detach();
+                else
+                    std::thread(ProcessCallback, callbackRegistry, responseHeader, responseArgsJson).detach();
             }
             else if (responseHeader.msgType == ResponseHeader::MsgType::MSG_RETURN)
             {                
@@ -156,6 +159,26 @@ nlohmann::json RpcClient::Call(
     rpcRequest.header.bufferSize = rpcRequest.jsonArgs.size();
 
     return ProcessRPC(rpcRequest);
+}
+
+std::string RpcClient::Call(const std::string& functionName, const std::string& jsonArgs)
+{
+    RpcRequest rpcRequest;
+    rpcRequest.header.clientId = clientId;
+    strncpy(
+        rpcRequest.header.functionName,
+        functionName.c_str(),
+        sizeof(rpcRequest.header.functionName) - 1
+    );
+    rpcRequest.jsonArgs = jsonArgs;
+    rpcRequest.header.bufferSize = rpcRequest.jsonArgs.size();
+
+    return ProcessRPC(rpcRequest);
+}
+
+void RpcClient::RegisterCallbackHandler(std::function<void(int, const std::string&)> fn)
+{
+    callbackHandler = fn;
 }
 
 int RpcClient::RegisterCallback(Callback cb)
@@ -224,6 +247,11 @@ nlohmann::json RpcClient::ProcessRPC(const RpcRequest& req)
         continue;
 
     printf("RPC: %s |-> %s\n", req.header.functionName, responseArgsJson.c_str());
+
+    if (isNode) 
+    {
+        return nlohmann::json::parse(responseArgsJson)["result"].get<std::string>();
+    }
     auto str = nlohmann::json::parse(responseArgsJson)["result"].get<std::string>();
     auto retval = nlohmann::json::parse(str, nullptr, false);
     rpcReturnValueReady = false;
