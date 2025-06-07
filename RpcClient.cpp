@@ -122,10 +122,10 @@ RpcClient::~RpcClient()
     receiver.join();
 }
 
- nlohmann::json RpcClient::Call(
+nlohmann::json RpcClient::Call(
     const std::string& functionName,
-    const std::initializer_list<std::pair<std::string, nlohmann::json>>& dataArgs,
-    const std::initializer_list<std::pair<std::string, Callback>>& callbackArgs)
+    const std::vector<std::pair<std::string, nlohmann::json>>& dataArgs,
+    const std::vector<std::pair<std::string, Callback>>& callbackArgs)
 {
     std::vector<std::string> keys;
     std::vector<std::string> values;

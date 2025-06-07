@@ -49,22 +49,30 @@ struct ResponseHeader
 class RpcClient
 {
 public:
-    RpcClient(int port = 6969);
-
-    ~RpcClient();
+    static RpcClient& Get()
+    {
+        static RpcClient rpcClient{};
+        return rpcClient;
+    }
 
     using Callback = std::function<void(const nlohmann::json&)>;
 
     // Make a call with arguments and optional callbacks
     nlohmann::json Call(
         const std::string& function_name,
-        const std::initializer_list<std::pair<std::string, nlohmann::json>>& dataArgs = {},
-        const std::initializer_list<std::pair<std::string, Callback>>& callbackArgs = {}
+        const std::vector<std::pair<std::string, nlohmann::json>>& dataArgs = {},
+        const std::vector<std::pair<std::string, Callback>>& callbackArgs = {}
     );
 
     int GetClientId() { return clientId; }
 
 private:
+    RpcClient(int port = 6969);
+    ~RpcClient();
+
+    RpcClient(const RpcClient&) = delete;
+    const RpcClient& operator=(const RpcClient&) = delete;
+
     nlohmann::json ProcessRPC(const RpcRequest& req);
     int RegisterCallback(Callback cb);
     
