@@ -250,7 +250,9 @@ nlohmann::json RpcClient::ProcessRPC(const RpcRequest& req)
 
     if (isNode) 
     {
-        return nlohmann::json::parse(responseArgsJson)["result"].get<std::string>();
+        auto str = nlohmann::json::parse(responseArgsJson)["result"].get<std::string>();
+        rpcReturnValueReady = false;
+        return str;
     }
     auto str = nlohmann::json::parse(responseArgsJson)["result"].get<std::string>();
     auto retval = nlohmann::json::parse(str, nullptr, false);
